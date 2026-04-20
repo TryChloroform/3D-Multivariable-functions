@@ -194,6 +194,12 @@
         ctx.fillStyle = '#fff';
         ctx.fillRect(padding, 40, plotW, plotH);
 
+        // Clip to plot area to prevent curves from escaping
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(padding, 40, plotW, plotH);
+        ctx.clip();
+
         // Draw curves with color map
         const segments = [];
         ctx.lineWidth = 1;
@@ -214,6 +220,8 @@
             }
             ctx.stroke();
         }
+
+        ctx.restore();
 
         // Border & zero lines
         ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
