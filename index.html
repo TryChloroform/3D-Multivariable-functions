@@ -25,7 +25,7 @@
         input { width: 100%; padding: 10px; margin: 10px 0; border: 2px solid #000; box-sizing: border-box; font-weight: bold; }
         button { width: 100%; padding: 10px; margin-top: 5px; cursor: pointer; background: #fff; border: 2px solid #000; font-weight: bold; text-transform: uppercase; }
         button:hover { background: #000; color: #fff; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin-top: 10px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 5px; margin-top: 10px; }
         .legend { font-size: 11px; margin-top: 10px; line-height: 1.5; font-weight: bold; }
     </style>
 </head>
@@ -44,6 +44,7 @@
             <button onclick="viewMode('3d')">3D</button>
             <button onclick="viewMode('fx')">f×x</button>
             <button onclick="viewMode('fy')">f×y</button>
+            <button onclick="viewMode('contour')">x×y</button>
         </div>
 
         <div class="legend">
@@ -111,6 +112,10 @@
             camera.position.set(12, 12, 12);
             controls.update();
             updateGraph();
+        } else if (mode === 'contour') {
+            // Hide the SVG renderer canvas and show a 2D canvas instead
+            renderer.domElement.style.display = 'none';
+            drawContourMap(compiled);
         } else {
             // Hide the SVG renderer canvas and show a 2D canvas instead
             renderer.domElement.style.display = 'none';
@@ -179,7 +184,8 @@
             curves.push({ param, pts });
         }
 
-        const domainV = Math.max(Math.abs(vMin), Math.abs(vMax)) + 0.25 || 5;
+        // Set domainV to match domainIn for rough 1:1 ratio between x and y axes
+        const domainV = domainIn;
 
         const toCanvasX = sweep => padding + ((sweep + domainIn) / (2 * domainIn)) * plotW;
         const toCanvasY = fv    => 40     + ((domainV - fv)     / (2 * domainV))  * plotH;
@@ -291,6 +297,167 @@
         canvas.remove = () => { tooltip.remove(); origRemove(); };
     }
 
+    function drawContourMap(compiled) {
+        const W = window.innerWidth, H = window.innerHeight;
+        const canvas = document.createElement('canvas');
+        canvas.width = W; canvas.height = H;
+        canvas.style.position = 'absolute';
+        canvas.style.top = '0'; canvas.style.left = '0';
+        document.body.appendChild(canvas);
+        contourCanvas = canvas;
+
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, W, H);
+
+        const domainIn = 10;
+        const padding = 80;
+        const plotW = W - padding - 40;
+        const plotH = H - padding - 40;
+
+        const gridN = 50;
+        const fGrid = [];
+        let vMin = Infinity, vMax = -Infinity;
+        for (let i = 0; i <= gridN; i++) {
+            fGrid[i] = [];
+            for (let j = 0; j <= gridN; j++) {
+                const x = -domainIn + (i / gridN) * 2 * domainIn;
+                const y = -domainIn + (j / gridN) * 2 * domainIn;
+                let fv;
+                try {
+                    fv = compiled.evaluate({ x, y });
+                    if (!isFinite(fv)) fv = null;
+                } catch(e) { fv = null; }
+                fGrid[i][j] = fv;
+                if (fv !== null) {
+                    if (fv < vMin) vMin = fv;
+                    if (fv > vMax) vMax = fv;
+                }
+            }
+        }
+        if (vMin === Infinity) { vMin = vMax = 0; }
+
+        const nLevels = 10;
+        const levels = [];
+        for (let k = 0; k < nLevels; k++) {
+            levels.push(vMin + (k / (nLevels - 1)) * (vMax - vMin));
+        }
+
+        const toCanvasX = x => padding + ((x + domainIn) / (2 * domainIn)) * plotW;
+        const toCanvasY = y => 40 + ((domainIn - y) / (2 * domainIn)) * plotH;
+
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(padding, 40, plotW, plotH);
+
+        ctx.lineWidth = 1;
+        for (const level of levels) {
+            ctx.strokeStyle = getContourColor(level, vMin, vMax);
+            ctx.beginPath();
+            for (let i = 0; i < gridN; i++) {
+                for (let j = 0; j < gridN; j++) {
+                    const f00 = fGrid[i][j];
+                    const f10 = fGrid[i+1][j];
+                    const f01 = fGrid[i][j+1];
+                    const f11 = fGrid[i+1][j+1];
+                    if (f00 === null || f10 === null || f01 === null || f11 === null) continue;
+                    const x0 = -domainIn + (i / gridN) * 2 * domainIn;
+                    const y0 = -domainIn + (j / gridN) * 2 * domainIn;
+                    const dx = 2 * domainIn / gridN;
+                    const dy = 2 * domainIn / gridN;
+                    let points = [];
+                    if ((f00 <= level && f10 >= level) || (f00 >= level && f10 <= level)) {
+                        const t = (level - f00) / (f10 - f00);
+                        points.push({x: x0 + t * dx, y: y0});
+                    }
+                    if ((f01 <= level && f11 >= level) || (f01 >= level && f11 <= level)) {
+                        const t = (level - f01) / (f11 - f01);
+                        points.push({x: x0 + t * dx, y: y0 + dy});
+                    }
+                    if ((f00 <= level && f01 >= level) || (f00 >= level && f01 <= level)) {
+                        const t = (level - f00) / (f01 - f00);
+                        points.push({x: x0, y: y0 + t * dy});
+                    }
+                    if ((f10 <= level && f11 >= level) || (f10 >= level && f11 <= level)) {
+                        const t = (level - f10) / (f11 - f10);
+                        points.push({x: x0 + dx, y: y0 + t * dy});
+                    }
+                    if (points.length >= 2) {
+                        ctx.moveTo(toCanvasX(points[0].x), toCanvasY(points[0].y));
+                        ctx.lineTo(toCanvasX(points[1].x), toCanvasY(points[1].y));
+                    }
+                }
+            }
+            ctx.stroke();
+        }
+
+        ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+        ctx.strokeRect(padding, 40, plotW, plotH);
+
+        ctx.setLineDash([6, 4]); ctx.strokeStyle = '#aaa'; ctx.lineWidth = 1;
+        const zeroX = toCanvasX(0);
+        if (zeroX >= padding && zeroX <= padding + plotW) {
+            ctx.beginPath(); ctx.moveTo(zeroX, 40); ctx.lineTo(zeroX, 40 + plotH); ctx.stroke();
+        }
+        const zeroY = toCanvasY(0);
+        if (zeroY >= 40 && zeroY <= 40 + plotH) {
+            ctx.beginPath(); ctx.moveTo(padding, zeroY); ctx.lineTo(padding + plotW, zeroY); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = '#000'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+        ctx.textAlign = 'center'; ctx.font = 'bold 11px sans-serif';
+        for (let v = -domainIn; v <= domainIn; v += 2) {
+            const px = toCanvasX(v);
+            ctx.beginPath(); ctx.moveTo(px, 40 + plotH); ctx.lineTo(px, 40 + plotH + 6); ctx.stroke();
+            ctx.fillText(v, px, 40 + plotH + 18);
+        }
+        ctx.textAlign = 'right';
+        for (let v = -domainIn; v <= domainIn; v += 2) {
+            const py = toCanvasY(v);
+            ctx.beginPath(); ctx.moveTo(padding - 6, py); ctx.lineTo(padding, py); ctx.stroke();
+            ctx.fillText(v, padding - 9, py + 4);
+        }
+
+        ctx.fillStyle = '#000'; ctx.textAlign = 'center'; ctx.font = 'bold 13px sans-serif';
+        ctx.fillText('x', padding + plotW / 2, H - 10);
+        ctx.save(); ctx.translate(14, 40 + plotH / 2); ctx.rotate(-Math.PI / 2);
+        ctx.fillText('y', 0, 0); ctx.restore();
+
+        ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left';
+        ctx.fillText('Contour Map of f(x,y)', padding, 24);
+
+        const tooltip = document.createElement('div');
+        tooltip.style.cssText = 'position:absolute;background:#000;color:#fff;padding:4px 8px;font:bold 12px sans-serif;pointer-events:none;display:none;border-radius:2px;white-space:nowrap;z-index:20';
+        document.body.appendChild(tooltip);
+
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+            if (mx < padding || mx > padding + plotW || my < 40 || my > 40 + plotH) {
+                tooltip.style.display = 'none'; return;
+            }
+            const x = -domainIn + ((mx - padding) / plotW) * 2 * domainIn;
+            const y = domainIn - ((my - 40) / plotH) * 2 * domainIn;
+            let fv;
+            try {
+                fv = compiled.evaluate({ x, y });
+                if (!isFinite(fv)) fv = null;
+            } catch(e) { fv = null; }
+            if (fv !== null) {
+                tooltip.textContent = `f(${x.toFixed(2)}, ${y.toFixed(2)}) = ${fv.toFixed(3)}`;
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 14) + 'px';
+                tooltip.style.top = (e.clientY - 10) + 'px';
+            } else {
+                tooltip.style.display = 'none';
+            }
+        });
+        canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+        const origRemove = canvas.remove.bind(canvas);
+        canvas.remove = () => { tooltip.remove(); origRemove(); };
+    }
+
     function createAxes() {
         const axesData = [
             { dir: new THREE.Vector3(1,0,0), col: 0xff0000, label: 'x'      }, // X
@@ -332,6 +499,35 @@
         
         createAxes();
         updateGraph();
+        
+        // Make controls draggable
+        let isDraggingControls = false;
+        let dragStartX, dragStartY;
+        let controlsStartLeft, controlsStartTop;
+        const controlsDiv = document.getElementById('controls');
+        const controlHeader = controlsDiv.querySelector('.control-header');
+        controlHeader.style.cursor = 'move';
+        controlHeader.addEventListener('mousedown', e => {
+            if (e.target.tagName === 'BUTTON') return; // don't drag when clicking button
+            isDraggingControls = true;
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+            const rect = controlsDiv.getBoundingClientRect();
+            controlsStartLeft = rect.left;
+            controlsStartTop = rect.top;
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', e => {
+            if (isDraggingControls) {
+                const dx = e.clientX - dragStartX;
+                const dy = e.clientY - dragStartY;
+                controlsDiv.style.left = (controlsStartLeft + dx) + 'px';
+                controlsDiv.style.top = (controlsStartTop + dy) + 'px';
+            }
+        });
+        document.addEventListener('mouseup', () => {
+            isDraggingControls = false;
+        });
         
         function animate() {
             requestAnimationFrame(animate);
