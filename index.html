@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Math & Contour Visualizer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/Projector.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/SVGRenderer.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/10.0.0/math.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <style>
+        body { margin: 0; font-family: sans-serif; background: #fff; overflow: hidden; }
+        #controls {
+            position: absolute; top: 20px; left: 20px; 
+            background: rgba(255, 255, 255, 0.95); padding: 20px;
+            border: 2px solid #000; z-index: 10; width: 240px;
+            box-shadow: 5px 5px 0px rgba(0,0,0,0.1);
+        }
+        input { width: 100%; padding: 10px; margin: 10px 0; border: 2px solid #000; box-sizing: border-box; font-weight: bold; }
+        button { width: 100%; padding: 10px; margin-top: 5px; cursor: pointer; background: #fff; border: 2px solid #000; font-weight: bold; text-transform: uppercase; }
+        button:hover { background: #000; color: #fff; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin-top: 10px; }
+        .legend { font-size: 11px; margin-top: 10px; line-height: 1.5; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <strong>FUNCTION f(x, y)</strong>
+    <input type="text" id="funcInput" value="sin(x) * cos(y)">
+    
+    <div class="grid">
+        <button onclick="viewMode('3d')">3D</button>
+        <button onclick="viewMode('fx')">f×x</button>
+        <button onclick="viewMode('fy')">f×y</button>
+    </div>
+
+    <div class="legend">
+        <span style="color:#ff0000">━ X AXIS</span><br>
+        <span style="color:#0000ff">━ Y AXIS</span><br>
+        <span style="color:#00aa00">━ f(x,y) AXIS</span>
+    </div>
+</div>
+
+<script>
+    let scene, camera, renderer, controls, surfaceMesh;
+    let contourGroup = new THREE.Group();
+    const range = 20;
+    const res = 60;
+
+    function updateGraph() {
+        if (surfaceMesh) scene.remove(surfaceMesh);
+        if (contourGroup) scene.remove(contourGroup);
+        contourGroup = new THREE.Group();
+
+        const expr = document.getElementById('funcInput').value;
+        const geo = new THREE.PlaneGeometry(range, range, res, res);
+        geo.rotateX(-Math.PI / 2);
+
+        const pos = geo.attributes.position.array;
+        
+        try {
+            const compiled = math.compile(expr);
+            // Update 3D Surface
+            for (let i = 0; i < pos.length; i += 3) {
+                pos[i + 1] = compiled.evaluate({ x: pos[i], y: pos[i+2] }) || 0;
+            }
+            
+            surfaceMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ 
+                color: 0x000000, wireframe: true, side: THREE.DoubleSide, opacity: 0.3, transparent: true 
+            }));
+            scene.add(surfaceMesh);
+            surfaceMesh.visible = true;
+
+        } catch (e) { alert("Math Error"); }
+    }
+
+    let contourCanvas = null;
+
+    function viewMode(mode) {
+        if (!surfaceMesh) return;
+
+        // Remove any existing canvas overlay (calls overridden remove which also cleans tooltip)
+        if (contourCanvas) { contourCanvas.remove(); contourCanvas = null; }
+
+        const expr = document.getElementById('funcInput').value;
+        const compiled = math.compile(expr);
+
+        if (mode === '3d') {
+            surfaceMesh.visible = true;
+            renderer.domElement.style.display = '';
+            camera.position.set(12, 12, 12);
+            controls.update();
+            updateGraph();
+        } else {
+            // Hide the SVG renderer canvas and show a 2D canvas instead
+            renderer.domElement.style.display = 'none';
+            drawContourCanvas(mode, compiled);
+        }
+    }
+
+    function drawContourCanvas(mode, compiled) {
+        // mode === 'fx': x on horiz axis, f(x,y) on vert axis
+        //   for each fixed y_k, trace the curve (x, f(x, y_k))
+        //   hover shows "y = y_k"
+        // mode === 'fy': y on horiz axis, f(x,y) on vert axis
+        //   for each fixed x_k, trace the curve (y, f(x_k, y))
+        //   hover shows "x = x_k"
+
+        const W = window.innerWidth, H = window.innerHeight;
+        const canvas = document.createElement('canvas');
+        canvas.width = W; canvas.height = H;
+        canvas.style.position = 'absolute';
+        canvas.style.top = '0'; canvas.style.left = '0';
+        document.body.appendChild(canvas);
+        contourCanvas = canvas;
+
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, W, H);
+
+        const domainIn = 10;
+        const padding  = 80;
+        const plotW = W - padding - 40;
+        const plotH = H - padding - 40;
+
+        const horizLabel = mode === 'fx' ? 'x' : 'y';
+        const vertLabel  = 'f(x,y)';
+        const titleLabel = mode === 'fx'
+            ? 'f(x,y) vs x  —  each curve is a fixed y slice'
+            : 'f(x,y) vs y  —  each curve is a fixed x slice';
+
+        // Pre-compute all curve data to find f range first
+        const gridN   = 200;
+        const nCurves = 20;
+        let vMin = Infinity, vMax = -Infinity;
+        const curves = [];
+
+        for (let ki = 0; ki <= nCurves; ki++) {
+            const param = -domainIn + (ki / nCurves) * 2 * domainIn;
+            const pts = [];
+            for (let ci = 0; ci <= gridN; ci++) {
+                const sweep = -domainIn + (ci / gridN) * 2 * domainIn;
+                let fv;
+                try {
+                    fv = mode === 'fx'
+                        ? compiled.evaluate({ x: sweep, y: param })
+                        : compiled.evaluate({ x: param, y: sweep });
+                    if (!isFinite(fv)) fv = null;
+                } catch(e) { fv = null; }
+                pts.push({ sweep, fv });
+                if (fv !== null) { if (fv < vMin) vMin = fv; if (fv > vMax) vMax = fv; }
+            }
+            curves.push({ param, pts });
+        }
+
+        const domainV = Math.max(Math.abs(vMin), Math.abs(vMax)) + 0.25 || 5;
+
+        const toCanvasX = sweep => padding + ((sweep + domainIn) / (2 * domainIn)) * plotW;
+        const toCanvasY = fv    => 40     + ((domainV - fv)     / (2 * domainV))  * plotH;
+
+        // White plot background
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(padding, 40, plotW, plotH);
+
+        // Draw curves — black, no colour
+        const segments = [];
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1;
+
+        for (const curve of curves) {
+            ctx.beginPath();
+            let first = true, prevCX = null, prevCY = null;
+            for (const { sweep, fv } of curve.pts) {
+                if (fv === null) { first = true; prevCX = null; continue; }
+                const cx = toCanvasX(sweep), cy = toCanvasY(fv);
+                if (first) { ctx.moveTo(cx, cy); first = false; }
+                else {
+                    ctx.lineTo(cx, cy);
+                    if (prevCX !== null) segments.push({ param: curve.param, x1: prevCX, y1: prevCY, x2: cx, y2: cy });
+                }
+                prevCX = cx; prevCY = cy;
+            }
+            ctx.stroke();
+        }
+
+        // Border & zero lines
+        ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+        ctx.strokeRect(padding, 40, plotW, plotH);
+
+        ctx.setLineDash([6, 4]); ctx.strokeStyle = '#aaa'; ctx.lineWidth = 1;
+        const zeroX = toCanvasX(0);
+        if (zeroX >= padding && zeroX <= padding + plotW) {
+            ctx.beginPath(); ctx.moveTo(zeroX, 40); ctx.lineTo(zeroX, 40 + plotH); ctx.stroke();
+        }
+        const zeroFv = toCanvasY(0);
+        if (zeroFv >= 40 && zeroFv <= 40 + plotH) {
+            ctx.beginPath(); ctx.moveTo(padding, zeroFv); ctx.lineTo(padding + plotW, zeroFv); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // Tick marks & labels
+        ctx.fillStyle = '#000'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+
+        ctx.textAlign = 'center'; ctx.font = 'bold 11px sans-serif';
+        for (let v = -domainIn; v <= domainIn; v += 2) {
+            const px = toCanvasX(v);
+            ctx.beginPath(); ctx.moveTo(px, 40 + plotH); ctx.lineTo(px, 40 + plotH + 6); ctx.stroke();
+            ctx.fillText(v, px, 40 + plotH + 18);
+        }
+
+        ctx.textAlign = 'right';
+        const rawStep = (2 * domainV) / 8;
+        const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+        const vTickStep = Math.ceil(rawStep / mag) * mag || 1;
+        for (let v = -domainV; v <= domainV + vTickStep * 0.01; v += vTickStep) {
+            const py = toCanvasY(v);
+            if (py < 40 || py > 40 + plotH) continue;
+            ctx.beginPath(); ctx.moveTo(padding - 6, py); ctx.lineTo(padding, py); ctx.stroke();
+            ctx.fillText(v.toFixed(2), padding - 9, py + 4);
+        }
+
+        // Axis labels
+        ctx.fillStyle = '#000'; ctx.textAlign = 'center'; ctx.font = 'bold 13px sans-serif';
+        ctx.fillText(horizLabel, padding + plotW / 2, H - 10);
+        ctx.save(); ctx.translate(14, 40 + plotH / 2); ctx.rotate(-Math.PI / 2);
+        ctx.fillText(vertLabel, 0, 0); ctx.restore();
+
+        // Title
+        ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left';
+        ctx.fillText(titleLabel, padding, 24);
+
+        // Hover tooltip
+        const tooltip = document.createElement('div');
+        tooltip.style.cssText = 'position:absolute;background:#000;color:#fff;padding:4px 8px;font:bold 12px sans-serif;pointer-events:none;display:none;border-radius:2px;white-space:nowrap;z-index:20';
+        document.body.appendChild(tooltip);
+
+        const HIT_RADIUS = 6;
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+            if (mx < padding || mx > padding + plotW || my < 40 || my > 40 + plotH) {
+                tooltip.style.display = 'none'; return;
+            }
+            let bestDist = HIT_RADIUS, bestSeg = null;
+            for (const seg of segments) {
+                const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+                const lenSq = dx*dx + dy*dy;
+                if (lenSq === 0) continue;
+                let t = ((mx - seg.x1)*dx + (my - seg.y1)*dy) / lenSq;
+                t = Math.max(0, Math.min(1, t));
+                const nx = seg.x1 + t*dx - mx, ny = seg.y1 + t*dy - my;
+                const dist = Math.sqrt(nx*nx + ny*ny);
+                if (dist < bestDist) { bestDist = dist; bestSeg = seg; }
+            }
+            if (bestSeg) {
+                const fixedName = mode === 'fx' ? 'y' : 'x';
+                tooltip.textContent = `${fixedName} = ${bestSeg.param.toFixed(3)}`;
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 14) + 'px';
+                tooltip.style.top  = (e.clientY - 10) + 'px';
+            } else { tooltip.style.display = 'none'; }
+        });
+        canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+        const origRemove = canvas.remove.bind(canvas);
+        canvas.remove = () => { tooltip.remove(); origRemove(); };
+    }
+
+    function createAxes() {
+        const axesData = [
+            { dir: new THREE.Vector3(1,0,0), col: 0xff0000, label: 'x'      }, // X
+            { dir: new THREE.Vector3(0,1,0), col: 0x00aa00, label: 'f(x,y)' }, // height = f(x,y)
+            { dir: new THREE.Vector3(0,0,1), col: 0x0000ff, label: 'y'      }  // Z renamed to y
+        ];
+
+        axesData.forEach(axis => {
+            // Main Line
+            const pts = [axis.dir.clone().multiplyScalar(-10), axis.dir.clone().multiplyScalar(10)];
+            const geo = new THREE.BufferGeometry().setFromPoints(pts);
+            scene.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: axis.col, linewidth: 5 })));
+
+            // Ticks
+            for (let i = -10; i <= 10; i += 2) {
+                if (i === 0) continue;
+                const tickPts = [];
+                const tickOffset = 0.2;
+                const pos = axis.dir.clone().multiplyScalar(i);
+                
+                tickPts.push(pos.clone().add(new THREE.Vector3(tickOffset, tickOffset, tickOffset)));
+                tickPts.push(pos.clone().sub(new THREE.Vector3(tickOffset, tickOffset, tickOffset)));
+                
+                const tickGeo = new THREE.BufferGeometry().setFromPoints(tickPts);
+                scene.add(new THREE.Line(tickGeo, new THREE.LineBasicMaterial({ color: axis.col })));
+            }
+        });
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xffffff);
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(12, 12, 12);
+        renderer = new THREE.SVGRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        
+        createAxes();
+        updateGraph();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+    });
+</script>
+</body>
+</html>
