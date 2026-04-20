@@ -18,6 +18,10 @@
             border: 2px solid #000; z-index: 10; width: 240px;
             box-shadow: 5px 5px 0px rgba(0,0,0,0.1);
         }
+        #controls.collapsed .control-content { display: none; }
+        #controls.collapsed { width: auto; padding: 10px; }
+        .control-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .toggle-btn { width: auto; padding: 5px 10px; font-size: 12px; text-transform: none; }
         input { width: 100%; padding: 10px; margin: 10px 0; border: 2px solid #000; box-sizing: border-box; font-weight: bold; }
         button { width: 100%; padding: 10px; margin-top: 5px; cursor: pointer; background: #fff; border: 2px solid #000; font-weight: bold; text-transform: uppercase; }
         button:hover { background: #000; color: #fff; }
@@ -28,19 +32,25 @@
 <body>
 
 <div id="controls">
-    <strong>FUNCTION f(x, y)</strong>
-    <input type="text" id="funcInput" value="sin(x) * cos(y)">
-    
-    <div class="grid">
-        <button onclick="viewMode('3d')">3D</button>
-        <button onclick="viewMode('fx')">f×x</button>
-        <button onclick="viewMode('fy')">f×y</button>
+    <div class="control-header">
+        <strong>Controls</strong>
+        <button class="toggle-btn" onclick="toggleControls()">Hide</button>
     </div>
+    <div class="control-content">
+        <strong>FUNCTION f(x, y)</strong>
+        <input type="text" id="funcInput" value="sin(x) * cos(y)">
+        
+        <div class="grid">
+            <button onclick="viewMode('3d')">3D</button>
+            <button onclick="viewMode('fx')">f×x</button>
+            <button onclick="viewMode('fy')">f×y</button>
+        </div>
 
-    <div class="legend">
-        <span style="color:#ff0000">━ X AXIS</span><br>
-        <span style="color:#0000ff">━ Y AXIS</span><br>
-        <span style="color:#00aa00">━ f(x,y) AXIS</span>
+        <div class="legend">
+            <span style="color:#ff0000">━ X AXIS</span><br>
+            <span style="color:#0000ff">━ Y AXIS</span><br>
+            <span style="color:#00aa00">━ f(x,y) AXIS</span>
+        </div>
     </div>
 </div>
 
@@ -49,6 +59,13 @@
     let contourGroup = new THREE.Group();
     const range = 20;
     const res = 60;
+
+    function toggleControls() {
+        const controlsDiv = document.getElementById('controls');
+        const toggleBtn = controlsDiv.querySelector('.toggle-btn');
+        controlsDiv.classList.toggle('collapsed');
+        toggleBtn.textContent = controlsDiv.classList.contains('collapsed') ? 'Show' : 'Hide';
+    }
 
     function updateGraph() {
         if (surfaceMesh) scene.remove(surfaceMesh);
@@ -99,6 +116,12 @@
             renderer.domElement.style.display = 'none';
             drawContourCanvas(mode, compiled);
         }
+    }
+
+    function getContourColor(param, minParam, maxParam) {
+        const normalized = (param - minParam) / (maxParam - minParam);
+        const hue = normalized * 270; // 0 to 270 degrees for rainbow
+        return `hsl(${hue}, 100%, 50%)`; // darker lightness for better visibility
     }
 
     function drawContourCanvas(mode, compiled) {
@@ -165,12 +188,12 @@
         ctx.fillStyle = '#fff';
         ctx.fillRect(padding, 40, plotW, plotH);
 
-        // Draw curves — black, no colour
+        // Draw curves with color map
         const segments = [];
-        ctx.strokeStyle = '#000';
         ctx.lineWidth = 1;
 
         for (const curve of curves) {
+            ctx.strokeStyle = getContourColor(curve.param, -domainIn, domainIn);
             ctx.beginPath();
             let first = true, prevCX = null, prevCY = null;
             for (const { sweep, fv } of curve.pts) {
